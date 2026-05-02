@@ -419,7 +419,23 @@ def render_table_html(df_table: pd.DataFrame) -> str:
     </table>"""
 
 
-def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.Series, hist: pd.Series):
+def build_rangebreaks(interval: str) -> list:
+    """
+    根據時間框架自動生成 rangebreaks，消除非交易時段空白：
+    - 所有框架：移除週末（週六/週日）
+    - 日內框架（1m/5m/15m/30m/1h）：額外移除盤外時段（美股 16:00-09:30 ET）
+    """
+    intraday = interval in ["1m", "5m", "15m", "30m", "1h", "60m", "90m"]
+    breaks = [dict(bounds=["sat", "mon"])]
+    if intraday:
+        # 美股 09:30-16:00 ET = 13:30-20:00 UTC（夏令時）
+        # 移除 20:00–13:30 UTC 的非交易時段
+        breaks.append(dict(bounds=[20, 13.5], pattern="hour"))
+    return breaks
+
+
+def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.Series,
+                     hist: pd.Series, interval: str = "1d"):
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -457,6 +473,9 @@ def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.
         line=dict(color="#e07b39", width=1.5, dash="dot"),
     ), row=2, col=1)
 
+    # ── 自動移除非交易時段 ────────────────────────────────
+    rangebreaks = build_rangebreaks(interval)
+
     fig.update_layout(
         paper_bgcolor="#fff8f0",
         plot_bgcolor="#fff8f0",
@@ -466,7 +485,12 @@ def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.
         height=480,
         xaxis_rangeslider_visible=False,
     )
-    fig.update_xaxes(gridcolor="#e8e3da", zeroline=False)
+    # shared_xaxes=True 時，xaxis 和 xaxis2 都需要套用 rangebreaks
+    fig.update_xaxes(
+        gridcolor="#e8e3da",
+        zeroline=False,
+        rangebreaks=rangebreaks,
+    )
     fig.update_yaxes(gridcolor="#e8e3da", zeroline=True, zerolinecolor="#c0bbb2")
     return fig
 
@@ -689,7 +713,7 @@ for symbol in symbols:
         chart_macd = macd_s.tail(60)
         chart_signal = signal_s.tail(60)
         chart_hist = hist_s.tail(60)
-        fig = build_macd_chart(chart_df, symbol, chart_macd, chart_signal, chart_hist)
+        fig = build_macd_chart(chart_df, symbol, chart_macd, chart_signal, chart_hist, interval=tf_cfg["interval"])
         st.plotly_chart(fig, use_container_width=True)
 
     # ── Telegram 信號預覽 ───────────────────────────────
