@@ -421,35 +421,63 @@ def render_table_html(df_table: pd.DataFrame) -> str:
 
 def fmt_labels(index, interval: str) -> list:
     """
-    根據時間框架格式化 x 軸標籤，用於 categorical axis。
-    使用字串標籤取代 datetime，徹底消除非交易時段空白。
+    為 categorical x 軸生成【唯一】字串標籤。
+
+    關鍵原則：每個標籤必須唯一，否則 Plotly categorical axis
+    會把相同標籤（如不同日的 "13:30"）合併成同一欄，造成 K 線疊圖。
+
+    策略：
+    - 日線/週線/月線：用 "MM/DD" (唯一)
+    - 日內：全部用 "MM/DD HH:MM" (唯一)，但 tick 標籤只顯示時間部分
+      → 透過 ticktext/tickvals 讓 x 軸標籤更易讀
     """
     import pandas as pd
     intraday = interval in ["1m", "5m", "15m", "30m", "1h", "60m", "90m"]
     labels = []
-    prev_date = None
     for ts in index:
-        if hasattr(ts, 'tz_localize'):
-            dt = ts
-        else:
-            dt = pd.Timestamp(ts)
-        # 嘗試轉換為美東時間顯示
+        dt = pd.Timestamp(ts)
         try:
             dt_local = dt.tz_convert("America/New_York") if dt.tzinfo else dt
         except Exception:
             dt_local = dt
-        cur_date = dt_local.date()
         if intraday:
-            if cur_date != prev_date:
-                # 日期變更時在時間前加日期
-                label = dt_local.strftime("%m/%d %H:%M")
-                prev_date = cur_date
-            else:
-                label = dt_local.strftime("%H:%M")
+            # 永遠包含日期，保證唯一性
+            label = dt_local.strftime("%m/%d %H:%M")
         else:
             label = dt_local.strftime("%m/%d")
         labels.append(label)
     return labels
+
+
+def make_tick_display(labels: list, interval: str) -> tuple:
+    """
+    從唯一標籤列表生成抽稀的 tickvals + ticktext，
+    日內框架：tick 顯示時間，日期變更時顯示完整日期+時間。
+    回傳 (tickvals, ticktext)
+    """
+    intraday = interval in ["1m", "5m", "15m", "30m", "1h", "60m", "90m"]
+    n = len(labels)
+    # 抽稀：最多顯示 12 個 tick
+    step = max(1, n // 12)
+    selected = labels[::step]
+
+    if not intraday:
+        return selected, selected
+
+    # 日內：ticktext 同日只顯示 HH:MM，換日顯示 MM/DD HH:MM
+    ticktext = []
+    prev_date = None
+    for lbl in selected:
+        # label 格式固定為 "MM/DD HH:MM"
+        parts = lbl.split(" ")
+        date_part = parts[0]   # MM/DD
+        time_part = parts[1] if len(parts) > 1 else lbl
+        if date_part != prev_date:
+            ticktext.append(lbl)   # 換日：顯示完整
+            prev_date = date_part
+        else:
+            ticktext.append(time_part)  # 同日：只顯示時間
+    return selected, ticktext
 
 
 def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.Series,
@@ -501,32 +529,28 @@ def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.
         line=dict(color="#e07b39", width=1.5, dash="dot"),
     ), row=2, col=1)
 
-    # x 軸 tick 抽稀（避免標籤過密）
-    n = len(x_labels)
-    tick_step = max(1, n // 10)
-    tickvals = x_labels[::tick_step]
+    # 生成抽稀 tick，日內框架智慧顯示日期/時間
+    tickvals, ticktext = make_tick_display(x_labels, interval)
+
+    xaxis_cfg = dict(
+        type="category",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        tickangle=-35,
+        gridcolor="#e8e3da",
+        showgrid=True,
+    )
 
     fig.update_layout(
         paper_bgcolor="#fff8f0",
         plot_bgcolor="#fff8f0",
         font=dict(family="IBM Plex Mono, Noto Sans TC", color="#2c2c2c", size=11),
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10, r=10, t=40, b=20),
         legend=dict(orientation="h", y=1.02, x=0),
-        height=480,
+        height=500,
         xaxis_rangeslider_visible=False,
-        # categorical axis — 只渲染實際存在的時間點
-        xaxis=dict(
-            type="category",
-            tickvals=tickvals,
-            tickangle=-30,
-            gridcolor="#e8e3da",
-        ),
-        xaxis2=dict(
-            type="category",
-            tickvals=tickvals,
-            tickangle=-30,
-            gridcolor="#e8e3da",
-        ),
+        xaxis=xaxis_cfg,
+        xaxis2=xaxis_cfg,
     )
     fig.update_yaxes(gridcolor="#e8e3da", zeroline=True, zerolinecolor="#c0bbb2")
     return fig
