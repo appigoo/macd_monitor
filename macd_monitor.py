@@ -209,6 +209,20 @@ def calc_macd(close: pd.Series, fast=12, slow=26, signal=9):
     return macd_line, signal_line, histogram
 
 
+def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """計算 ATR（平均真實波幅），回傳最新一根值"""
+    high = df["High"]
+    low  = df["Low"]
+    close_prev = df["Close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - close_prev).abs(),
+        (low  - close_prev).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(span=period, adjust=False).mean()
+    return atr.iloc[-1]
+
+
 def classify_status(hist: pd.Series, macd: pd.Series, signal: pd.Series) -> list:
     statuses = []
     for i in range(len(hist)):
@@ -760,12 +774,40 @@ for symbol in symbols:
             sv = st_tf[-1]
             tr_tf = get_overall_trend(mv, hv, sv)
             h_cls = "pos" if hv >= 0 else "neg"
+            atr_val = calc_atr(df_tf)
+            td1, td2, td3 = predict_next3(h_tf)
+
+            def _pred_span(v):
+                cls = "pos" if v >= 0 else "neg"
+                return f'<span class="{cls}" style="font-weight:600;">{v:+.3f}</span>'
+
             with mtf_cols[idx]:
                 st.markdown(f"""
-                <div class="metric-card">
-                    <div class="label">{tf}</div>
-                    <div class="value {h_cls}" style="font-size:16px">{hv:+.3f}</div>
-                    <div class="sub">{tr_tf}</div>
+                <div class="metric-card" style="position:relative;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                        <div class="label">{tf}</div>
+                        <div style="font-family:'IBM Plex Mono',monospace; font-size:11px;
+                                    background:#e8e3da; color:#555; padding:2px 8px;
+                                    border-radius:4px; font-weight:700; letter-spacing:0.3px;">
+                            ATR&nbsp;{atr_val:.3f}
+                        </div>
+                    </div>
+                    <div class="value {h_cls}" style="font-size:20px; margin:6px 0 2px; font-family:'IBM Plex Mono',monospace;">
+                        {hv:+.3f}
+                    </div>
+                    <div class="sub" style="margin-bottom:10px;">{tr_tf}</div>
+                    <div style="border-top:1px solid #e8e3da; padding-top:8px; margin-top:4px;
+                                font-family:'IBM Plex Mono',monospace; font-size:11px; color:#888;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                            <span>D+1</span>{_pred_span(td1)}
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                            <span>D+2</span>{_pred_span(td2)}
+                        </div>
+                        <div style="display:flex; justify-content:space-between;">
+                            <span>D+3</span>{_pred_span(td3)}
+                        </div>
+                    </div>
                 </div>""", unsafe_allow_html=True)
 
     # ── MACD 圖表 ───────────────────────────────────────
