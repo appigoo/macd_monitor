@@ -419,23 +419,51 @@ def render_table_html(df_table: pd.DataFrame) -> str:
     </table>"""
 
 
-def build_rangebreaks(interval: str) -> list:
+def fmt_labels(index, interval: str) -> list:
     """
-    根據時間框架自動生成 rangebreaks，消除非交易時段空白：
-    - 所有框架：移除週末（週六/週日）
-    - 日內框架（1m/5m/15m/30m/1h）：額外移除盤外時段（美股 16:00-09:30 ET）
+    根據時間框架格式化 x 軸標籤，用於 categorical axis。
+    使用字串標籤取代 datetime，徹底消除非交易時段空白。
     """
+    import pandas as pd
     intraday = interval in ["1m", "5m", "15m", "30m", "1h", "60m", "90m"]
-    breaks = [dict(bounds=["sat", "mon"])]
-    if intraday:
-        # 美股 09:30-16:00 ET = 13:30-20:00 UTC（夏令時）
-        # 移除 20:00–13:30 UTC 的非交易時段
-        breaks.append(dict(bounds=[20, 13.5], pattern="hour"))
-    return breaks
+    labels = []
+    prev_date = None
+    for ts in index:
+        if hasattr(ts, 'tz_localize'):
+            dt = ts
+        else:
+            dt = pd.Timestamp(ts)
+        # 嘗試轉換為美東時間顯示
+        try:
+            dt_local = dt.tz_convert("America/New_York") if dt.tzinfo else dt
+        except Exception:
+            dt_local = dt
+        cur_date = dt_local.date()
+        if intraday:
+            if cur_date != prev_date:
+                # 日期變更時在時間前加日期
+                label = dt_local.strftime("%m/%d %H:%M")
+                prev_date = cur_date
+            else:
+                label = dt_local.strftime("%H:%M")
+        else:
+            label = dt_local.strftime("%m/%d")
+        labels.append(label)
+    return labels
 
 
 def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.Series,
                      hist: pd.Series, interval: str = "1d"):
+    """
+    使用 categorical（字串）x 軸，徹底消除非交易時段空白。
+    不依賴 rangebreaks，對所有時間框架都有效。
+    """
+    # 轉換為字串標籤 — 只顯示實際有數據的 K 線
+    x_labels = fmt_labels(df.index, interval)
+    x_macd   = fmt_labels(macd.index, interval)
+    x_hist   = fmt_labels(hist.index, interval)
+    x_signal = fmt_labels(signal.index, interval)
+
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -446,35 +474,37 @@ def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.
 
     # 收盤線
     fig.add_trace(go.Scatter(
-        x=df.index, y=df["Close"],
+        x=x_labels, y=df["Close"].values,
         mode="lines",
         name="收盤價",
         line=dict(color="#5a7fa8", width=2),
     ), row=1, col=1)
 
-    # Histogram
-    colors = ["#4a8c6f" if v >= 0 else "#c0392b" for v in hist]
+    # Histogram — categorical x 軸下 Bar 不會出現跨時段空隙
+    colors = ["#4a8c6f" if v >= 0 else "#c0392b" for v in hist.values]
     fig.add_trace(go.Bar(
-        x=hist.index, y=hist,
+        x=x_hist, y=hist.values,
         name="Histogram",
         marker_color=colors,
-        opacity=0.8,
+        opacity=0.85,
     ), row=2, col=1)
 
     # MACD & Signal
     fig.add_trace(go.Scatter(
-        x=macd.index, y=macd,
+        x=x_macd, y=macd.values,
         mode="lines", name="MACD",
         line=dict(color="#5a7fa8", width=1.5),
     ), row=2, col=1)
     fig.add_trace(go.Scatter(
-        x=signal.index, y=signal,
+        x=x_signal, y=signal.values,
         mode="lines", name="Signal",
         line=dict(color="#e07b39", width=1.5, dash="dot"),
     ), row=2, col=1)
 
-    # ── 自動移除非交易時段 ────────────────────────────────
-    rangebreaks = build_rangebreaks(interval)
+    # x 軸 tick 抽稀（避免標籤過密）
+    n = len(x_labels)
+    tick_step = max(1, n // 10)
+    tickvals = x_labels[::tick_step]
 
     fig.update_layout(
         paper_bgcolor="#fff8f0",
@@ -484,12 +514,19 @@ def build_macd_chart(df: pd.DataFrame, symbol: str, macd: pd.Series, signal: pd.
         legend=dict(orientation="h", y=1.02, x=0),
         height=480,
         xaxis_rangeslider_visible=False,
-    )
-    # shared_xaxes=True 時，xaxis 和 xaxis2 都需要套用 rangebreaks
-    fig.update_xaxes(
-        gridcolor="#e8e3da",
-        zeroline=False,
-        rangebreaks=rangebreaks,
+        # categorical axis — 只渲染實際存在的時間點
+        xaxis=dict(
+            type="category",
+            tickvals=tickvals,
+            tickangle=-30,
+            gridcolor="#e8e3da",
+        ),
+        xaxis2=dict(
+            type="category",
+            tickvals=tickvals,
+            tickangle=-30,
+            gridcolor="#e8e3da",
+        ),
     )
     fig.update_yaxes(gridcolor="#e8e3da", zeroline=True, zerolinecolor="#c0bbb2")
     return fig
