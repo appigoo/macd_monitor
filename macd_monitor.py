@@ -242,6 +242,25 @@ def classify_status(hist: pd.Series, macd: pd.Series, signal: pd.Series) -> list
     return statuses
 
 
+# ─── 狀態 → 下一交易日預測 對照表 ──────────────────────────
+STATUS_NEXT_DAY = {
+    "空頭動能強":    ("跌勢延續",   "bear"),
+    "空頭減弱":      ("跌速放慢",   "warn"),
+    "跌勢放緩":      ("接近底部",   "warn"),
+    "空頭衰退":      ("技術反彈",   "warn"),
+    "接近反轉":      ("金叉概率提升", "neu"),
+    "多頭開始回補":  ("動能轉正",   "bull"),
+    "Histogram翻正": ("短線突破",   "bull"),
+    "MACD金叉確認":  ("多頭加速",   "bull"),
+    "多頭加速":      ("趨勢延續",   "bull"),
+    "強勢多頭":      ("趨勢延續",   "bull"),
+}
+
+def next_day_prediction(status: str) -> tuple:
+    """回傳 (預測文字, badge類型)"""
+    return STATUS_NEXT_DAY.get(status, ("待觀察", "neu"))
+
+
 def badge_html(status: str) -> str:
     bull_keywords = ["多頭", "翻正", "金叉", "放緩"]
     bear_keywords = ["空頭", "動能強"]
@@ -323,12 +342,15 @@ def build_macd_table(df: pd.DataFrame, n=10) -> pd.DataFrame:
         st_label = tail_status[i]
 
         is_last = i == len(tail) - 1
+        nd_text, nd_type = next_day_prediction(st_label)
         rows.append({
             "日線": date_str,
             "收盤": f"{tail['Close'].iloc[i]:.2f}",
             "MACD": fmt(m, 3),
             "Histogram": fmt(h, 3),
             "狀態": st_label,
+            "下一交易日預測": nd_text,
+            "_nd_type": nd_type,
             "預測 D+1": fmt(d1, 3) if is_last else "—",
             "預測 D+2": fmt(d2, 3) if is_last else "—",
             "預測 D+3": fmt(d3, 3) if is_last else "—",
@@ -339,8 +361,26 @@ def build_macd_table(df: pd.DataFrame, n=10) -> pd.DataFrame:
     return pd.DataFrame(rows), macd, signal, hist, statuses
 
 
+def next_day_badge_html(text: str, nd_type: str) -> str:
+    type_map = {
+        "bull": "badge-bull",
+        "bear": "badge-bear",
+        "warn": "badge-warn",
+        "neu":  "badge-neu",
+    }
+    icon_map = {
+        "bull": "▲",
+        "bear": "▼",
+        "warn": "◆",
+        "neu":  "●",
+    }
+    cls = type_map.get(nd_type, "badge-neu")
+    icon = icon_map.get(nd_type, "●")
+    return f'<span class="badge {cls}">{icon} {text}</span>'
+
+
 def render_table_html(df_table: pd.DataFrame) -> str:
-    cols = ["日線", "收盤", "MACD", "Histogram", "狀態", "預測 D+1", "預測 D+2", "預測 D+3"]
+    cols = ["日線", "收盤", "MACD", "Histogram", "狀態", "下一交易日預測", "預測 D+1", "預測 D+2", "預測 D+3"]
     header = "".join(f"<th>{c}</th>" for c in cols)
     rows_html = ""
     for _, row in df_table.iterrows():
@@ -355,6 +395,10 @@ def render_table_html(df_table: pd.DataFrame) -> str:
             cls = "cell-pos" if fv >= 0 else "cell-neg"
             return f'<td class="{cls}">{v}</td>'
 
+        nd_text = row.get("下一交易日預測", "—")
+        nd_type = row.get("_nd_type", "neu")
+        nd_cell = f'<td>{next_day_badge_html(nd_text, nd_type)}</td>'
+
         rows_html += f"""
         <tr>
             <td>{row['日線']}</td>
@@ -362,6 +406,7 @@ def render_table_html(df_table: pd.DataFrame) -> str:
             <td class="{m_cls}">{row['MACD']}</td>
             <td class="{h_cls}">{row['Histogram']}</td>
             <td>{badge_html(row['狀態'])}</td>
+            {nd_cell}
             {pred_cell(row['預測 D+1'])}
             {pred_cell(row['預測 D+2'])}
             {pred_cell(row['預測 D+3'])}
